@@ -1,45 +1,103 @@
 const express = require('express');
 const http = require('http');
-const cors = require('cors');
 const { Server } = require('socket.io');
-
-// Import game logic modules
-const setupTicTacToe = require('./games/tictactoe');
-const setupHangman = require('./games/hangman');
-const setupConnect4 = require('./games/connect4');
 
 const app = express();
 const server = http.createServer(app);
-
-// CORS setup to allow requests from your GitHub Pages frontend
-app.use(cors({
-  origin: 'https://your-username.github.io', // replace with your actual GitHub Pages URL
-  methods: ['GET', 'POST']
-}));
-
-// Socket.IO server setup with same CORS policy
 const io = new Server(server, {
   cors: {
-    origin: 'https://your-username.github.io', // replace with your actual GitHub Pages URL
-    methods: ['GET', 'POST']
+    origin: "*",  // Allow all origins for testing, restrict for production
   }
 });
 
-// When a client connects via WebSocket
-io.on('connection', socket => {
-  console.log('User connected:', socket.id);
+// Rooms data structure:
+// rooms = {
+//   roomId1: {
+//     game: "tictactoe" | "connect4" | "hangman",
+//     players: [socketId1, socketId2, ...],
+//     state: {}  // you can store game state here if needed
+//   }
+// }
+const rooms = {};
 
-  // Initialize each game handler for this socket connection
-  setupTicTacToe(io, socket);
-  setupHangman(io, socket);
-  setupConnect4(io, socket);
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.id}`);
 
-  // Optional: log disconnections
+  // Join a room
+  socket.on('joinRoom', ({ roomId, game }) => {
+    console.log(`${socket.id} joining room ${roomId} for game ${game}`);
+
+    // Create room if doesn't exist
+    if (!rooms[roomId]) {
+      rooms[roomId] = {
+        game,
+        players: [],
+        state: {},  // Init empty state, update later as needed
+      };
+    }
+
+    // Check if the room is for the same game
+    if (rooms[roomId].game !== game) {
+      socket.emit('errorMessage', 'This room is for a different game.');
+      return;
+    }
+
+    // Check if room is full (max 4 players)
+    if (rooms[roomId].players.length >= 4) {
+      socket.emit('errorMessage', 'Room is full.');
+      return;
+    }
+
+    // Add player to room
+    rooms[roomId].players.push(socket.id);
+    socket.join(roomId);
+
+    // Inform all players in room about current players
+    io.to(roomId).emit('playerList', rooms[roomId].players);
+
+    // Optionally send current game state to the new player
+    socket.emit('gameState', rooms[roomId].state);
+
+    // Notify others player joined
+    socket.to(roomId).emit('playerJoined', socket.id);
+
+    console.log(`Room ${roomId} players: `, rooms[roomId].players);
+  });
+
+  // Handle game moves or updates from client
+  socket.on('gameMove', ({ roomId, move }) => {
+    if (!rooms[roomId]) return;
+
+    // Update state here as needed
+    // For example:
+    // rooms[roomId].state = updateState(rooms[roomId].state, move);
+
+    // Broadcast move to other players in room
+    socket.to(roomId).emit('gameMove', move);
+  });
+
+  // Handle player disconnect
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    console.log(`User disconnected: ${socket.id}`);
+
+    // Remove player from any rooms
+    for (const roomId in rooms) {
+      const index = rooms[roomId].players.indexOf(socket.id);
+      if (index !== -1) {
+        rooms[roomId].players.splice(index, 1);
+        io.to(roomId).emit('playerLeft', socket.id);
+
+        // If no players left, delete the room
+        if (rooms[roomId].players.length === 0) {
+          delete rooms[roomId];
+          console.log(`Deleted empty room ${roomId}`);
+        }
+      }
+    }
   });
 });
 
-// Start the server on your preferred port
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});

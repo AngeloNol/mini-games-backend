@@ -1,100 +1,113 @@
-const ROWS = 6;
-const COLS = 7;
-
-function createBoard() {
-  return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
-}
-
-function checkWinner(board) {
-  // Check horizontal, vertical, diagonal lines for 4 in a row
-  const directions = [
-    [0,1], [1,0], [1,1], [1,-1]
-  ];
-
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (!board[r][c]) continue;
-
-      for (const [dr, dc] of directions) {
-        let count = 0;
-        let rr = r;
-        let cc = c;
-
-        while (
-          rr >= 0 && rr < ROWS &&
-          cc >= 0 && cc < COLS &&
-          board[rr][cc] === board[r][c]
-        ) {
-          count++;
-          if (count === 4) return board[r][c];
-          rr += dr;
-          cc += dc;
-        }
-      }
-    }
-  }
-  return null;
-}
-
 module.exports = function setupConnect4(io, socket) {
-  let roomId = null;
-  let board = createBoard();
-  let players = [];
-  let currentPlayerIndex = 0;
-  let gameOver = false;
+  // Rooms data: { roomId: { board, players, turn, winner, playerCount } }
+  const rooms = setupConnect4.rooms || {};
+  setupConnect4.rooms = rooms;
 
-  socket.on('connect4-join', ({ roomId: r }) => {
-    roomId = r;
+  socket.on('joinRoom', ({ roomId, game }) => {
+    if (game !== 'connect4') return;
     socket.join(roomId);
 
-    if (!players.includes(socket.id)) {
-      players.push(socket.id);
+    if (!rooms[roomId]) {
+      rooms[roomId] = {
+        board: Array(6).fill(null).map(() => Array(7).fill(null)), // 6 rows x 7 cols
+        players: [],
+        turn: 0,
+        winner: null,
+      };
     }
 
-    board = createBoard();
-    currentPlayerIndex = 0;
-    gameOver = false;
+    const room = rooms[roomId];
+    if (room.players.length < 4 && !room.players.includes(socket.id)) {
+      room.players.push(socket.id);
+    }
 
-    io.to(roomId).emit('connect4-update', {
-      board,
-      currentPlayer: players[currentPlayerIndex],
-      winner: null
+    io.to(roomId).emit('gameState', {
+      board: room.board,
+      turn: room.turn,
+      playersCount: room.players.length,
+      winner: room.winner,
     });
   });
 
-  socket.on('connect4-move', ({ roomId: r, column }) => {
-    if (r !== roomId || gameOver) return;
-    if (socket.id !== players[currentPlayerIndex]) return; // only current player can move
+  socket.on('gameMove', ({ roomId, column }) => {
+    const room = rooms[roomId];
+    if (!room) return;
 
-    // Find lowest empty row in column
-    let row = -1;
-    for (let r = ROWS - 1; r >= 0; r--) {
-      if (!board[r][column]) {
-        row = r;
+    const playerIndex = room.players.indexOf(socket.id);
+    if (playerIndex === -1) return; // player not in room
+    if (room.winner) return; // game ended
+    if (room.turn !== playerIndex) return; // not player's turn
+
+    // Place disc in column - find the lowest empty row
+    for (let row = 5; row >= 0; row--) {
+      if (room.board[row][column] === null) {
+        room.board[row][column] = playerIndex; // store player index for disc color
         break;
       }
+      if (row === 0) return; // column full, invalid move
     }
-    if (row === -1) return; // column full
 
-    board[row][column] = socket.id;
+    // Check if this move wins
+    room.winner = checkWinner(room.board);
 
-    const winner = checkWinner(board);
-    const isDraw = board.every(row => row.every(cell => cell !== null));
-
-    if (winner) {
-      gameOver = true;
-      io.to(roomId).emit('connect4-update', { board, currentPlayer: null, winner });
-    } else if (isDraw) {
-      gameOver = true;
-      io.to(roomId).emit('connect4-update', { board, currentPlayer: null, winner: null });
-    } else {
-      currentPlayerIndex = (currentPlayerIndex + 1) % players.length;
-      io.to(roomId).emit('connect4-update', { board, currentPlayer: players[currentPlayerIndex], winner: null });
+    if (!room.winner) {
+      room.turn = (room.turn + 1) % room.players.length;
     }
+
+    io.to(roomId).emit('gameState', {
+      board: room.board,
+      turn: room.turn,
+      winner: room.winner,
+    });
   });
 
   socket.on('disconnect', () => {
-    if(roomId) socket.leave(roomId);
-    players = players.filter(id => id !== socket.id);
+    for (const roomId in rooms) {
+      const room = rooms[roomId];
+      const idx = room.players.indexOf(socket.id);
+      if (idx !== -1) {
+        room.players.splice(idx, 1);
+        // End game if a player leaves
+        delete rooms[roomId];
+        io.to(roomId).emit('gameEnd', { message: 'Player disconnected, game ended.' });
+      }
+    }
   });
+
+  // Check for Connect4 winner - horizontal, vertical, diagonal
+  function checkWinner(board) {
+    const rows = 6;
+    const cols = 7;
+
+    function checkDirection(r, c, dr, dc) {
+      const player = board[r][c];
+      if (player === null) return false;
+      for (let i = 1; i < 4; i++) {
+        const nr = r + dr * i;
+        const nc = c + dc * i;
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) return false;
+        if (board[nr][nc] !== player) return false;
+      }
+      return true;
+    }
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (
+          checkDirection(r, c, 0, 1) ||    // horizontal
+          checkDirection(r, c, 1, 0) ||    // vertical
+          checkDirection(r, c, 1, 1) ||    // diagonal down-right
+          checkDirection(r, c, 1, -1)      // diagonal down-left
+        ) {
+          return board[r][c];
+        }
+      }
+    }
+
+    // Check for draw
+    const isDraw = board.every(row => row.every(cell => cell !== null));
+    if (isDraw) return 'draw';
+
+    return null;
+  }
 };
