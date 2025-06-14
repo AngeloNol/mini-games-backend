@@ -1,120 +1,95 @@
-const rooms = {};
+// backend/tictactoe.js
 
-function generateRoomId() {
-  return Math.random().toString(36).substr(2, 6);
+const { Server } = require("socket.io");
+
+// Holds game state per room
+const tictactoeRooms = {};
+
+function createEmptyBoard() {
+  return Array(9).fill(null);
 }
 
-function tictactoe(io, socket) {
-  socket.on('tictactoe-create-room', () => {
-    const roomId = generateRoomId();
-    rooms[roomId] = {
-      board: Array(9).fill(null),
-      players: [socket.id],
-      currentPlayerIndex: 0,
-      symbols: { [socket.id]: 'X' },
-      gameOver: false,
-    };
-    socket.join(roomId);
-    socket.emit('tictactoe-room-created', { roomId });
-  });
+function checkWinner(board) {
+  const winPatterns = [
+    [0,1,2], [3,4,5], [6,7,8],
+    [0,3,6], [1,4,7], [2,5,8],
+    [0,4,8], [2,4,6],
+  ];
 
-  socket.on('tictactoe-join-room', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) {
-      socket.emit('tictactoe-error', 'Room does not exist.');
-      return;
+  for (let pattern of winPatterns) {
+    const [a,b,c] = pattern;
+    if (board[a] && board[a] === board[b] && board[b] === board[c]) {
+      return board[a];
     }
+  }
+
+  return board.every(cell => cell !== null) ? 'draw' : null;
+}
+
+function handleTicTacToe(io, socket) {
+  socket.on("joinRoom", ({ roomId, game }) => {
+    if (game !== "tictactoe") return;
+
+    if (!tictactoeRooms[roomId]) {
+      tictactoeRooms[roomId] = {
+        players: [],
+        board: createEmptyBoard(),
+        currentTurn: 0, // index of current player's turn
+      };
+    }
+
+    const room = tictactoeRooms[roomId];
+
     if (room.players.length >= 2) {
-      socket.emit('tictactoe-error', 'Room is full.');
+      socket.emit("roomFull");
       return;
     }
-    room.players.push(socket.id);
-    room.symbols[socket.id] = 'O';
-    socket.join(roomId);
 
-    io.to(roomId).emit('tictactoe-room-joined', { roomId });
-    io.to(roomId).emit('tictactoe-update', {
-      board: room.board,
-      currentPlayer: room.players[room.currentPlayerIndex]
-    });
+    const playerId = room.players.length;
+    room.players.push(socket.id);
+    socket.join(roomId);
+    socket.emit("roomJoined", { game: "tictactoe", roomId, playerId });
+
+    if (room.players.length === 2) {
+      io.to(roomId).emit("gameStart", {
+        board: room.board,
+        currentTurn: room.currentTurn
+      });
+    }
   });
 
-  socket.on('tictactoe-make-move', ({ roomId, index }) => {
-    const room = rooms[roomId];
-    if (!room || room.gameOver) return;
+  socket.on("makeMove", ({ roomId, index }) => {
+    const room = tictactoeRooms[roomId];
+    if (!room) return;
 
-    if (socket.id !== room.players[room.currentPlayerIndex]) {
-      socket.emit('tictactoe-error', 'Not your turn.');
-      return;
-    }
+    const playerIndex = room.players.indexOf(socket.id);
+    if (playerIndex !== room.currentTurn || room.board[index] !== null) return;
 
-    if (room.board[index]) {
-      socket.emit('tictactoe-error', 'Cell already occupied.');
-      return;
-    }
-
-    room.board[index] = room.symbols[socket.id];
-
-    // Check winner
+    room.board[index] = playerIndex;
     const winner = checkWinner(room.board);
 
-    if (winner) {
-      room.gameOver = true;
-      io.to(roomId).emit('tictactoe-game-over', {
+    if (winner !== null) {
+      io.to(roomId).emit("gameOver", { board: room.board, winner });
+      delete tictactoeRooms[roomId];
+    } else {
+      room.currentTurn = 1 - room.currentTurn;
+      io.to(roomId).emit("gameUpdate", {
         board: room.board,
-        winner
+        currentTurn: room.currentTurn
       });
-      return;
     }
-
-    // Check draw
-    if (room.board.every(cell => cell !== null)) {
-      room.gameOver = true;
-      io.to(roomId).emit('tictactoe-game-over', {
-        board: room.board,
-        winner: null
-      });
-      return;
-    }
-
-    // Switch turn
-    room.currentPlayerIndex = (room.currentPlayerIndex + 1) % room.players.length;
-
-    io.to(roomId).emit('tictactoe-update', {
-      board: room.board,
-      currentPlayer: room.players[room.currentPlayerIndex]
-    });
   });
 
-  socket.on('disconnecting', () => {
-    for (const roomId of socket.rooms) {
-      if (rooms[roomId]) {
-        const room = rooms[roomId];
-        const idx = room.players.indexOf(socket.id);
-        if (idx !== -1) {
-          room.players.splice(idx, 1);
-          room.gameOver = true;
-          io.to(roomId).emit('tictactoe-game-over', { board: room.board, winner: null, message: "A player disconnected. Game ended." });
-          delete rooms[roomId];
-        }
+  socket.on("disconnect", () => {
+    for (const roomId in tictactoeRooms) {
+      const room = tictactoeRooms[roomId];
+      room.players = room.players.filter(p => p !== socket.id);
+
+      if (room.players.length === 0) {
+        delete tictactoeRooms[roomId];
       }
     }
   });
 }
 
-// Helper to check winner
-function checkWinner(board) {
-  const lines = [
-    [0,1,2], [3,4,5], [6,7,8], // rows
-    [0,3,6], [1,4,7], [2,5,8], // columns
-    [0,4,8], [2,4,6]           // diagonals
-  ];
-  for (const [a,b,c] of lines) {
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a]; // 'X' or 'O'
-    }
-  }
-  return null;
-}
-
-module.exports = tictactoe;
+module.exports = handleTicTacToe;

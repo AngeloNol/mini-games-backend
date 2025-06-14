@@ -6,16 +6,16 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",  // Allow all origins for testing, restrict for production
+    origin: "*", // Allow all origins for now — change for production
   }
 });
 
-// Rooms data structure:
+// Room structure
 // rooms = {
-//   roomId1: {
+//   roomId: {
 //     game: "tictactoe" | "connect4" | "hangman",
 //     players: [socketId1, socketId2, ...],
-//     state: {}  // you can store game state here if needed
+//     state: {}, // Game-specific state (board, guesses, etc.)
 //   }
 // }
 const rooms = {};
@@ -23,26 +23,29 @@ const rooms = {};
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  // Join a room
+  // --- JOIN ROOM ---
   socket.on('joinRoom', ({ roomId, game }) => {
-    console.log(`${socket.id} joining room ${roomId} for game ${game}`);
+    if (!roomId || !game) {
+      socket.emit('errorMessage', 'Room ID and game type are required.');
+      return;
+    }
 
-    // Create room if doesn't exist
+    // Create room if it doesn't exist
     if (!rooms[roomId]) {
       rooms[roomId] = {
         game,
         players: [],
-        state: {},  // Init empty state, update later as needed
+        state: {}, // Will be initialized by each game logic file
       };
     }
 
-    // Check if the room is for the same game
+    // Check if game types match
     if (rooms[roomId].game !== game) {
-      socket.emit('errorMessage', 'This room is for a different game.');
+      socket.emit('errorMessage', 'This room is already used for another game.');
       return;
     }
 
-    // Check if room is full (max 4 players)
+    // Max 4 players allowed
     if (rooms[roomId].players.length >= 4) {
       socket.emit('errorMessage', 'Room is full.');
       return;
@@ -52,45 +55,47 @@ io.on('connection', (socket) => {
     rooms[roomId].players.push(socket.id);
     socket.join(roomId);
 
-    // Inform all players in room about current players
+    console.log(`Socket ${socket.id} joined room ${roomId}`);
+
+    // Notify others
     io.to(roomId).emit('playerList', rooms[roomId].players);
-
-    // Optionally send current game state to the new player
-    socket.emit('gameState', rooms[roomId].state);
-
-    // Notify others player joined
-    socket.to(roomId).emit('playerJoined', socket.id);
-
-    console.log(`Room ${roomId} players: `, rooms[roomId].players);
+    socket.emit('gameState', rooms[roomId].state || {});
+    socket.emit('joinedRoom', roomId);
   });
 
-  // Handle game moves or updates from client
+  // --- GAME MOVE ---
   socket.on('gameMove', ({ roomId, move }) => {
-    if (!rooms[roomId]) return;
+    if (!roomId || !rooms[roomId]) return;
 
-    // Update state here as needed
-    // For example:
-    // rooms[roomId].state = updateState(rooms[roomId].state, move);
-
-    // Broadcast move to other players in room
+    // Relay move to other players
     socket.to(roomId).emit('gameMove', move);
+
+    // Optional: update game state if needed by backend
+    // rooms[roomId].state = updatedStateFunction(move, rooms[roomId].state);
   });
 
-  // Handle player disconnect
+  // --- UPDATE GAME STATE ---
+  socket.on('updateGameState', ({ roomId, newState }) => {
+    if (rooms[roomId]) {
+      rooms[roomId].state = newState;
+      io.to(roomId).emit('gameState', newState);
+    }
+  });
+
+  // --- DISCONNECT ---
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.id}`);
 
-    // Remove player from any rooms
     for (const roomId in rooms) {
-      const index = rooms[roomId].players.indexOf(socket.id);
-      if (index !== -1) {
-        rooms[roomId].players.splice(index, 1);
+      const idx = rooms[roomId].players.indexOf(socket.id);
+      if (idx !== -1) {
+        rooms[roomId].players.splice(idx, 1);
         io.to(roomId).emit('playerLeft', socket.id);
 
-        // If no players left, delete the room
+        // Remove room if empty
         if (rooms[roomId].players.length === 0) {
           delete rooms[roomId];
-          console.log(`Deleted empty room ${roomId}`);
+          console.log(`Deleted empty room: ${roomId}`);
         }
       }
     }
