@@ -1,68 +1,62 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
+const express = require("express");
+const http = require("http");
+const cors = require("cors");
+const { Server } = require("socket.io");
+const { v4: uuidv4 } = require("uuid");
+
+// Import game modules
+const initializeTicTacToe = require("./tictactoe");
+// const initializeHangman = require("./hangman");
+// const initializeConnect4 = require("./connect4");
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 
-const rooms = {};
+app.use(cors());
 
-io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+const rooms = new Map();
 
-  socket.on('createRoom', ({ game }) => {
-    const roomId = uuidv4();
-    rooms[roomId] = {
-      game,
-      players: [socket.id],
-      state: {}
-    };
-    socket.join(roomId);
-    socket.emit('roomCreated', { game, roomId });
-    console.log(`Room created: ${roomId} for game ${game}`);
+io.on("connection", (socket) => {
+  socket.on("createRoom", ({ game }) => {
+    const roomId = uuidv4().slice(0, 6);
+    rooms.set(roomId, { game });
+    socket.emit("roomCreated", { game, roomId });
   });
 
-  socket.on('joinRoom', ({ game, roomId }) => {
-    if (!rooms[roomId]) {
-      socket.emit('errorMsg', { message: 'Room does not exist.' });
-      return;
-    }
-    if (rooms[roomId].game !== game) {
-      socket.emit('errorMsg', { message: 'This room is for a different game.' });
-      return;
-    }
-    if (rooms[roomId].players.length >= 4) {
-      socket.emit('errorMsg', { message: 'Room is full.' });
-      return;
-    }
-    rooms[roomId].players.push(socket.id);
-    socket.join(roomId);
-    socket.emit('roomJoined', { game, roomId });
-    io.to(roomId).emit('playerList', rooms[roomId].players);
-    console.log(`${socket.id} joined room ${roomId}`);
-  });
+  socket.on("joinRoom", ({ game, roomId }) => {
+    const room = rooms.get(roomId);
 
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    for (const roomId in rooms) {
-      const idx = rooms[roomId].players.indexOf(socket.id);
-      if (idx !== -1) {
-        rooms[roomId].players.splice(idx, 1);
-        io.to(roomId).emit('playerLeft', socket.id);
-        if (rooms[roomId].players.length === 0) {
-          delete rooms[roomId];
-          console.log(`Deleted empty room ${roomId}`);
-        }
-      }
+    if (!room || room.game !== game) {
+      socket.emit("errorMsg", {
+        message: "Room not found or game mismatch.",
+      });
+      return;
+    }
+
+    // Allow the game module to handle joining
+    socket.join(roomId);
+    socket.emit("roomJoined", { game, roomId });
+
+    // Let the appropriate game handler take over
+    if (game === "tictactoe") {
+      // Already handled in game module
     }
   });
 });
+
+// Attach game-specific logic
+initializeTicTacToe(io);
+// initializeHangman(io);
+// initializeConnect4(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
