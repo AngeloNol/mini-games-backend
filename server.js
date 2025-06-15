@@ -5,7 +5,7 @@ const { Server } = require("socket.io");
 const { v4: uuidv4 } = require("uuid");
 
 // Import game modules
-const initializeTicTacToe = require("./tictactoe");
+const initializeTicTacToe = require('./games/tictactoe');
 // const initializeHangman = require("./hangman");
 // const initializeConnect4 = require("./connect4");
 
