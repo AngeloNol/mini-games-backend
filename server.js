@@ -6,7 +6,7 @@ const { v4: uuidv4 } = require("uuid");
 
 // Import game modules
 const initializeTicTacToe = require('./games/tictactoe');
-// const initializeHangman = require("./hangman");
+const initializeHangman = require("./games/hangman");
 // const initializeConnect4 = require("./connect4");
 
 const app = express();
@@ -53,7 +53,7 @@ io.on("connection", (socket) => {
 
 // Attach game-specific logic
 initializeTicTacToe(io);
-// initializeHangman(io);
+initializeHangman(io);
 // initializeConnect4(io);
 
 const PORT = process.env.PORT || 3000;
