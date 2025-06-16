@@ -1,104 +1,98 @@
-// backend/hangman.js
+module.exports = function initializeHangman(io) {
+  const rooms = new Map(); // roomId => { word, maskedWord, guesses, setter, guesser }
 
-const { Server } = require("socket.io");
-const { v4: uuidv4 } = require("uuid");
+  io.on("connection", (socket) => {
+    socket.on("joinRoom", ({ game, roomId }) => {
+      if (game !== "hangman") return;
 
-// Simple in-memory store for rooms and game states
-const hangmanRooms = {}; // Structure: { roomId: { word, correctLetters, incorrectLetters, players: [], currentTurnIndex } }
+      const roomData = rooms.get(roomId);
 
-function initHangman(io) {
-  io.of("/hangman").on("connection", (socket) => {
-    console.log("Hangman client connected", socket.id);
-
-    // Create Room
-    socket.on("createRoom", () => {
-      const roomId = uuidv4().slice(0, 6); // short unique ID
-      hangmanRooms[roomId] = {
-        word: pickRandomWord(),
-        correctLetters: [],
-        incorrectLetters: [],
-        players: [socket.id],
-        currentTurnIndex: 0
-      };
-      socket.join(roomId);
-      socket.emit("roomCreated", roomId);
-      console.log(`Room ${roomId} created with ${socket.id}`);
-    });
-
-    // Join Room
-    socket.on("joinRoom", (roomId) => {
-      const room = hangmanRooms[roomId];
-      if (room && room.players.length < 2) {
-        room.players.push(socket.id);
-        socket.join(roomId);
-
-        // Notify players
-        io.of("/hangman").to(roomId).emit("roomJoined", {
-          roomId,
-          wordDisplay: getWordDisplay(room.word, room.correctLetters),
-          incorrectLetters: room.incorrectLetters,
-          currentPlayer: room.players[room.currentTurnIndex],
+      if (!roomData) {
+        rooms.set(roomId, {
+          setter: socket.id,
+          guesses: [],
         });
-        console.log(`${socket.id} joined room ${roomId}`);
+        socket.join(roomId);
+        socket.emit("roomJoined", { game, roomId });
+        socket.emit("waitingForWord");
+      } else if (!roomData.guesser) {
+        roomData.guesser = socket.id;
+        socket.join(roomId);
+        socket.emit("roomJoined", { game, roomId });
+
+        // If word is already set, start the game for guesser
+        if (roomData.word) {
+          socket.to(roomId).emit("startGame", {
+            maskedWord: roomData.maskedWord,
+          });
+        }
       } else {
-        socket.emit("error", "Room full or does not exist");
+        socket.emit("errorMsg", { message: "Room full." });
       }
     });
 
-    // Handle guess
-    socket.on("guessLetter", ({ roomId, letter }) => {
-      const room = hangmanRooms[roomId];
-      if (!room || !room.players.includes(socket.id)) return;
+    socket.on("setWord", ({ roomId, word }) => {
+      const room = rooms.get(roomId);
+      if (!room || room.setter !== socket.id) return;
 
-      const isCorrect = room.word.includes(letter);
+      const cleanWord = word.toLowerCase();
+      room.word = cleanWord;
+      room.maskedWord = maskWord(cleanWord, []);
+      room.guesses = [];
 
-      if (isCorrect && !room.correctLetters.includes(letter)) {
-        room.correctLetters.push(letter);
-      } else if (!isCorrect && !room.incorrectLetters.includes(letter)) {
-        room.incorrectLetters.push(letter);
-      }
-
-      // Check if word is guessed
-      const wordGuessed = room.word.split("").every(l => room.correctLetters.includes(l));
-
-      // Swap turn
-      room.currentTurnIndex = (room.currentTurnIndex + 1) % room.players.length;
-
-      io.of("/hangman").to(roomId).emit("gameState", {
-        wordDisplay: getWordDisplay(room.word, room.correctLetters),
-        incorrectLetters: room.incorrectLetters,
-        currentPlayer: room.players[room.currentTurnIndex],
-        isCorrect,
-        gameOver: wordGuessed || room.incorrectLetters.length >= 6,
-        winner: wordGuessed ? socket.id : null,
+      io.to(roomId).emit("startGame", {
+        maskedWord: room.maskedWord,
       });
     });
 
-    // Handle disconnection
+    socket.on("guessLetter", ({ roomId, letter }) => {
+      const room = rooms.get(roomId);
+      if (!room || !room.word || room.guesser !== socket.id) return;
+
+      if (room.guesses.includes(letter)) return;
+      room.guesses.push(letter);
+
+      const wasCorrect = room.word.includes(letter);
+      const masked = maskWord(room.word, room.guesses);
+
+      room.maskedWord = masked;
+
+      io.to(roomId).emit("updateMaskedWord", {
+        maskedWord: masked,
+        correct: wasCorrect,
+      });
+
+      if (!masked.includes("_")) {
+        io.to(roomId).emit("gameOver", { win: true, word: room.word });
+        rooms.delete(roomId);
+      }
+
+      if (!wasCorrect && countWrongGuesses(room.word, room.guesses) >= 6) {
+        io.to(roomId).emit("gameOver", { win: false, word: room.word });
+        rooms.delete(roomId);
+      }
+    });
+
     socket.on("disconnect", () => {
-      console.log("Hangman client disconnected", socket.id);
-      for (const [roomId, room] of Object.entries(hangmanRooms)) {
-        if (room.players.includes(socket.id)) {
-          delete hangmanRooms[roomId];
-          io.of("/hangman").to(roomId).emit("error", "Opponent disconnected");
-          break;
+      for (const [roomId, room] of rooms.entries()) {
+        if (room.setter === socket.id || room.guesser === socket.id) {
+          io.to(roomId).emit("errorMsg", { message: "Other player disconnected." });
+          rooms.delete(roomId);
         }
       }
     });
   });
-}
 
-// Helper functions
-function pickRandomWord() {
-  const words = ["apple", "banana", "cherry", "dragon", "elephant"];
-  return words[Math.floor(Math.random() * words.length)];
-}
+  function maskWord(word, guesses) {
+    return word
+      .split("")
+      .map((ch) =>
+        ch === " " ? " " : guesses.includes(ch.toLowerCase()) ? ch : "_"
+      )
+      .join("");
+  }
 
-function getWordDisplay(word, correctLetters) {
-  return word
-    .split("")
-    .map((letter) => (correctLetters.includes(letter) ? letter : "_"))
-    .join(" ");
-}
-
-module.exports = initHangman;
+  function countWrongGuesses(word, guesses) {
+    return guesses.filter((l) => !word.includes(l)).length;
+  }
+};
