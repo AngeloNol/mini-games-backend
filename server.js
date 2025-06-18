@@ -2,7 +2,7 @@
 const http = require("http");
 const express = require("express");
 const path = require("path");
-const initializeTicTacToe = require("./backend/tictactoe");
+const initializeTicTacToe = require("./games/tictactoe");
 
 const app = express();
 const server = http.createServer(app);
