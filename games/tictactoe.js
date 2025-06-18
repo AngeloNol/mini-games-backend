@@ -10,23 +10,33 @@ module.exports = function initializeTicTacToe(io) {
       socket.roomId = roomId;
 
       if (!games.has(roomId)) {
+        // Create a new game
         games.set(roomId, {
-          players: [socket],
+          players: [],
           board: Array(9).fill(null),
           currentTurn: 0,
         });
+      }
+
+      const gameData = games.get(roomId);
+
+      if (gameData.players.length >= 2) {
+        socket.emit("errorMsg", { message: "Room is full." });
+        return;
+      }
+
+      gameData.players.push(socket);
+      const playerIndex = gameData.players.indexOf(socket);
+      socket.symbol = playerIndex === 0 ? "X" : "O";
+
+      if (gameData.players.length === 1) {
         socket.emit("waitingForOpponent");
-      } else {
-        const gameData = games.get(roomId);
-        if (gameData.players.length >= 2) return;
-
-        gameData.players.push(socket);
-
-        // Notify both players
-        gameData.players.forEach((playerSocket, index) => {
+      } else if (gameData.players.length === 2) {
+        // Start the game for both players
+        gameData.players.forEach((playerSocket, idx) => {
           playerSocket.emit("startGame", {
-            symbol: index === 0 ? "X" : "O",
-            turn: gameData.currentTurn === index,
+            symbol: playerSocket.symbol,
+            turn: gameData.currentTurn === idx,
           });
         });
       }
@@ -39,7 +49,7 @@ module.exports = function initializeTicTacToe(io) {
       const playerIndex = gameData.players.indexOf(socket);
       if (playerIndex !== gameData.currentTurn || gameData.board[index]) return;
 
-      gameData.board[index] = playerIndex === 0 ? "X" : "O";
+      gameData.board[index] = socket.symbol;
       gameData.currentTurn = 1 - gameData.currentTurn;
 
       gameData.players.forEach((playerSocket) => {
@@ -56,12 +66,18 @@ module.exports = function initializeTicTacToe(io) {
 
       const gameData = games.get(roomId);
       if (gameData) {
+        // Remove the disconnected player
+        gameData.players = gameData.players.filter((skt) => skt.id !== socket.id);
+
+        // Notify the remaining player
         gameData.players.forEach((skt) => {
-          if (skt.id !== socket.id) {
-            skt.emit("opponentDisconnected");
-          }
+          skt.emit("opponentDisconnected");
         });
-        games.delete(roomId);
+
+        // Clean up if no players left
+        if (gameData.players.length === 0) {
+          games.delete(roomId);
+        }
       }
     });
   });
