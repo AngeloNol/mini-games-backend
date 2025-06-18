@@ -1,84 +1,98 @@
 // backend/tictactoe.js
-module.exports = function initializeTicTacToe(io) {
+const { Server } = require("socket.io");
+
+function initializeTicTacToe(server) {
+  const io = new Server(server);
+
+  // Store game states by roomId
   const games = new Map();
 
   io.on("connection", (socket) => {
-    socket.on("joinRoom", ({ game, roomId }) => {
-      if (game !== "tictactoe") return;
+    console.log("New client connected: " + socket.id);
 
+    socket.on("joinRoom", ({ roomId }) => {
       socket.join(roomId);
-      socket.roomId = roomId;
+      console.log(`Socket ${socket.id} joined room ${roomId}`);
 
+      // Initialize game if first player
       if (!games.has(roomId)) {
-        // Create a new game
         games.set(roomId, {
-          players: [],
-          board: Array(9).fill(null),
-          currentTurn: 0,
+          board: Array(9).fill(null), // 3x3 board flat array
+          players: [socket.id], // player X is first to join
+          turn: socket.id,      // X starts
+          symbols: { [socket.id]: "X" }, 
+          gameOver: false
         });
-      }
-
-      const gameData = games.get(roomId);
-
-      if (gameData.players.length >= 2) {
-        socket.emit("errorMsg", { message: "Room is full." });
-        return;
-      }
-
-      gameData.players.push(socket);
-      const playerIndex = gameData.players.indexOf(socket);
-      socket.symbol = playerIndex === 0 ? "X" : "O";
-
-      if (gameData.players.length === 1) {
         socket.emit("waitingForOpponent");
-      } else if (gameData.players.length === 2) {
-        // Start the game for both players
-        gameData.players.forEach((playerSocket, idx) => {
-          playerSocket.emit("startGame", {
-            symbol: playerSocket.symbol,
-            turn: gameData.currentTurn === idx,
+        console.log(`Created new game in room ${roomId}`);
+      } else {
+        // Second player joins
+        const game = games.get(roomId);
+
+        if (game.players.length < 2) {
+          game.players.push(socket.id);
+          game.symbols[socket.id] = "O"; // second player is O
+          game.turn = game.players[0];   // X always starts
+
+          // Notify both players game starts
+          io.to(roomId).emit("startGame", { 
+            board: game.board,
+            turn: game.turn,
+            symbols: game.symbols
           });
-        });
+          console.log(`Game started in room ${roomId} with players:`, game.players);
+        } else {
+          // Room full
+          socket.emit("roomFull");
+          console.log(`Socket ${socket.id} tried to join full room ${roomId}`);
+        }
       }
     });
 
     socket.on("makeMove", ({ roomId, index }) => {
-      const gameData = games.get(roomId);
-      if (!gameData) return;
+      const game = games.get(roomId);
+      if (!game || game.gameOver) return;
 
-      const playerIndex = gameData.players.indexOf(socket);
-      if (playerIndex !== gameData.currentTurn || gameData.board[index]) return;
+      // Check if it's this player's turn and the spot is empty
+      if (socket.id === game.turn && game.board[index] === null) {
+        const symbol = game.symbols[socket.id];
+        game.board[index] = symbol;
 
-      gameData.board[index] = socket.symbol;
-      gameData.currentTurn = 1 - gameData.currentTurn;
-
-      gameData.players.forEach((playerSocket) => {
-        playerSocket.emit("updateBoard", {
-          board: gameData.board,
-          nextTurn: gameData.currentTurn,
-        });
-      });
-    });
-
-    socket.on("disconnect", () => {
-      const roomId = socket.roomId;
-      if (!roomId) return;
-
-      const gameData = games.get(roomId);
-      if (gameData) {
-        // Remove the disconnected player
-        gameData.players = gameData.players.filter((skt) => skt.id !== socket.id);
-
-        // Notify the remaining player
-        gameData.players.forEach((skt) => {
-          skt.emit("opponentDisconnected");
-        });
-
-        // Clean up if no players left
-        if (gameData.players.length === 0) {
-          games.delete(roomId);
+        // Check for win or draw
+        if (checkWin(game.board, symbol)) {
+          game.gameOver = true;
+          io.to(roomId).emit("gameOver", { winner: socket.id, board: game.board });
+          console.log(`Game over! Winner: ${socket.id} in room ${roomId}`);
+        } else if (game.board.every(cell => cell !== null)) {
+          game.gameOver = true;
+          io.to(roomId).emit("gameOver", { winner: null, board: game.board }); // draw
+          console.log(`Game over! Draw in room ${roomId}`);
+        } else {
+          // Switch turn
+          game.turn = game.players.find(id => id !== socket.id);
+          io.to(roomId).emit("updateBoard", { board: game.board, turn: game.turn });
         }
       }
     });
+
+    socket.on("disconnect", () => {
+      console.log("Client disconnected: " + socket.id);
+      // Optional: Handle player leaving mid-game and cleanup
+    });
   });
-};
+
+  // Helper: Win conditions
+  function checkWin(board, symbol) {
+    const winPatterns = [
+      [0,1,2], [3,4,5], [6,7,8], // rows
+      [0,3,6], [1,4,7], [2,5,8], // cols
+      [0,4,8], [2,4,6]           // diagonals
+    ];
+
+    return winPatterns.some(pattern =>
+      pattern.every(idx => board[idx] === symbol)
+    );
+  }
+}
+
+module.exports = initializeTicTacToe;
