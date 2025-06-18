@@ -1,4 +1,5 @@
-const initializeTicTacToe = (io) => {
+// backend/tictactoe.js
+module.exports = function initializeTicTacToe(io) {
   const games = new Map();
 
   io.on("connection", (socket) => {
@@ -6,63 +7,62 @@ const initializeTicTacToe = (io) => {
       if (game !== "tictactoe") return;
 
       socket.join(roomId);
+      socket.roomId = roomId;
+
       if (!games.has(roomId)) {
-        games.set(roomId, { players: [socket], board: Array(9).fill(null), turn: "X" });
+        games.set(roomId, {
+          players: [socket],
+          board: Array(9).fill(null),
+          currentTurn: 0,
+        });
+        socket.emit("waitingForOpponent");
       } else {
         const gameData = games.get(roomId);
         if (gameData.players.length >= 2) return;
 
         gameData.players.push(socket);
 
-        // Assign roles
-        const [playerX, playerO] = gameData.players;
-        playerX.emit("startGame", { symbol: "X" });
-        playerO.emit("startGame", { symbol: "O" });
-      }
-
-      socket.on("makeMove", ({ index }) => {
-        const gameData = games.get(roomId);
-        if (!gameData || gameData.board[index]) return;
-
-        const currentSymbol = gameData.turn;
-        gameData.board[index] = currentSymbol;
-        gameData.turn = currentSymbol === "X" ? "O" : "X";
-
-        io.to(roomId).emit("moveMade", {
-          index,
-          symbol: currentSymbol,
-          board: gameData.board
+        // Notify both players
+        gameData.players.forEach((playerSocket, index) => {
+          playerSocket.emit("startGame", {
+            symbol: index === 0 ? "X" : "O",
+            turn: gameData.currentTurn === index,
+          });
         });
+      }
+    });
 
-        if (checkWinner(gameData.board)) {
-          io.to(roomId).emit("gameOver", { winner: currentSymbol });
-          games.delete(roomId);
-        } else if (gameData.board.every(cell => cell)) {
-          io.to(roomId).emit("gameOver", { winner: null }); // draw
-          games.delete(roomId);
-        }
-      });
+    socket.on("makeMove", ({ roomId, index }) => {
+      const gameData = games.get(roomId);
+      if (!gameData) return;
 
-      socket.on("disconnect", () => {
-        const gameData = games.get(roomId);
-        if (gameData) {
-          io.to(roomId).emit("opponentDisconnected");
-          games.delete(roomId);
-        }
+      const playerIndex = gameData.players.indexOf(socket);
+      if (playerIndex !== gameData.currentTurn || gameData.board[index]) return;
+
+      gameData.board[index] = playerIndex === 0 ? "X" : "O";
+      gameData.currentTurn = 1 - gameData.currentTurn;
+
+      gameData.players.forEach((playerSocket) => {
+        playerSocket.emit("updateBoard", {
+          board: gameData.board,
+          nextTurn: gameData.currentTurn,
+        });
       });
     });
+
+    socket.on("disconnect", () => {
+      const roomId = socket.roomId;
+      if (!roomId) return;
+
+      const gameData = games.get(roomId);
+      if (gameData) {
+        gameData.players.forEach((skt) => {
+          if (skt.id !== socket.id) {
+            skt.emit("opponentDisconnected");
+          }
+        });
+        games.delete(roomId);
+      }
+    });
   });
-
-  function checkWinner(board) {
-    const wins = [
-      [0,1,2], [3,4,5], [6,7,8],
-      [0,3,6], [1,4,7], [2,5,8],
-      [0,4,8], [2,4,6]
-    ];
-    return wins.some(([a,b,c]) =>
-      board[a] && board[a] === board[b] && board[a] === board[c]
-    );
-  }
 };
-
-module.exports = initializeTicTacToe;
