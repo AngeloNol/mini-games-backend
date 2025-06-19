@@ -3,7 +3,7 @@ const http = require("http");
 const express = require("express");
 const path = require("path");
 const { Server } = require("socket.io"); // ✅ Import Socket.IO
-const initializeTicTacToe = require("./games/tictactoe");
+const initializeTicTacToe = require("./games/tictactoe.js");
 
 const app = express();
 const server = http.createServer(app);
