@@ -2,16 +2,25 @@
 const http = require("http");
 const express = require("express");
 const path = require("path");
+const { Server } = require("socket.io"); // ✅ Import Socket.IO
 const initializeTicTacToe = require("./games/tictactoe");
 
 const app = express();
 const server = http.createServer(app);
 
-// Serve static files from a "public" folder (for your frontend)
+// Serve static files (optional if hosting separately like GitHub Pages)
 app.use(express.static(path.join(__dirname, "public")));
 
-// Initialize Tic-Tac-Toe Socket.io server
-initializeTicTacToe(server);
+// ✅ Create Socket.IO server
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Adjust for production
+    methods: ["GET", "POST"],
+  },
+});
+
+// ✅ Pass Socket.IO to your game logic
+initializeTicTacToe(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
